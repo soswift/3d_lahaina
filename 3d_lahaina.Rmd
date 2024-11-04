@@ -1,0 +1,506 @@
+---
+output:
+  html_document:
+    df_print: paged
+---
+
+# Rayshader lahaina
+
+To start, install the "leaflet" package. This just helps check map boundaries.
+Can skip this if you don't need want to check.
+
+To get rayshader on a mac, you will need to download and install XQuartz (xquartz.org).
+Then, install the "rgl" package. Then carry out these lines:
+
+install.packages("devtools")
+devtools::install_github("tylermorganwall/rayshader")
+
+# Set map area
+
+Create a bounding box for the desired area (Waimea). The leaflet package will display it on a map
+
+```{r}
+library(rayshader)
+library(leaflet)
+library(dplyr)
+library(httr)
+library(raster)
+library(data.table)
+source("source.R")
+
+
+# define bounding box with longitude/latitude coordinates
+# first point is bottom left extent of the map, second point is the upper right
+
+bbox <- list(
+  p1 = list(long = -156.73, # western boundary
+            lat = 20.845), # southern boundary
+  p2 = list(long = -156.58, # eastern boundary
+            lat = 20.915) # northern boundary
+)
+
+#N21 W156
+plot_bb(bbox)
+```
+
+# Find and load elevation raster
+
+There are a few options for high resolution topography/bathymetry in Hawaii.
+
+1. First try. This elevation raster looks a little bit higher resolution (1m or maybe 10m?). It still looks pretty flat, although if you zoom in a bit it's pretty cool because you can see a lot of detail. I found it through the USGS lidar map here:
+
+Visualization link:
+https://usgs.entwine.io/data/view.html?r=%22https://s3-us-west-2.amazonaws.com/usgs-lidar-public/USGS_LPC_HI_Oahu_2012_LAS_2015%22
+
+Download tool:
+https://apps.nationalmap.gov/lidar-explorer/#/
+
+
+2. It occurred to me that we might be able to make the 3d printed model more interesting by adding bathymetry. After all, we are marine biologists. It would actually be pretty cool to print moku o loʻe and heʻeia with some high resolution bathymetry so you could paint in the reefs and things. NOAA has a combined coastal topobathy layer available here. However, the online visualization makes it seem like the zone around moku o loʻe is missing a bunch of data.
+
+Visualization link:
+https://coast.noaa.gov/dataviewer/#/lidar/search/-17565936.14244514,2442612.1212525563,-17564235.418565795,2444331.954388973/details/9365
+
+
+3. I tried searching for 'hawaii topobathy' and found this dataset which can be downloaded here. It's part of a big NOAA inundation model that covers various parts of the US. It's a synthesis of data from all kinds of bathymetry/topography lidar sources. Kind of annoying to download because you have to read the documentation about how the files are named and then figure out which lat/lon grid section you need. We want this one.
+
+Data description:
+https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/dem/NCEI_ninth_Topobathy_Hawaii_9428/hawaii_tiled_lmsl_2021.pdf
+
+Download link for all Hawaii grids:
+https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/dem/NCEI_ninth_Topobathy_Hawaii_9428/index.html
+
+Specific download link for grid that includes Kaneʻohe bay:
+https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/dem/NCEI_ninth_Topobathy_Hawaii_9428/tiles/ncei19_n21x50_w158x00_2021v1.tif
+
+
+We'll try using option 3.
+
+Note: 
+
+this option has cells that ar 1/9th arc-second, which equates to ~3m at this latitude.
+
+The elevation is in meters, so the zacale (ratio of z axis to x/y spacing) is '3' 
+
+```{r}
+
+# define location of elevation file 
+topobath_file = "data/ncei19_n21x00_w156x75_2021v1.tif"
+
+zscale = 3
+
+```
+
+# Quickly Plot
+
+First, read the elevation data (.tif file) using another function.
+Then, use rayshader code to calculate data layers and build a 2D plot.
+
+```{r}
+# load elevation data
+elev_img <- raster::raster(topobath_file)
+
+
+# crop data to fit bounding box
+elev_crop = crop(elev_img, extent(bbox$p1$long, bbox$p2$long, bbox$p1$lat, bbox$p2$lat))
+
+# convert raster to matrix
+
+elev_matrix = raster_to_matrix(elev_crop)
+```
+
+
+# Plot 1 - Zoomed out version
+
+
+## 2D Map
+Plot a 2d version of the 3d elevation layer to see if it looks okay (e.g. correct bounding box, reasonable resolution)
+
+```{r}
+# quick 2d check
+height_shade(elev_matrix) %>%
+  plot_map() 
+```
+
+## 3D Map
+
+Generate a fully 3 dimensional rendering of the map area with some nice shadows (i.e. rayshading) to make it look 'real'. 
+
+This part isn't strictly necessary for 3d printing, it just makes a pretty 3d rendering that will give you an idea of how the final print will look.
+
+
+```{r}
+# calculate rayshader layers, this step is resource intensive
+# raymat   <- ray_shade(elev_matrix,
+#                       zscale = zscale,
+#                       lambert = TRUE,
+#                       multicore = T)
+# 
+# ambmat   <- ambient_shade(elev_matrix,
+#                           zscale = zscale,
+#                           multicore = T)
+```
+
+
+```{r}
+# note, 'detect water' might need fine tuning
+# watermap <- detect_water(elev_matrix,
+#                          max_height = 0.1,
+#                          cutoff = 0
+#                          )
+```
+
+These can take a long time to generate, so maybe let's save them to disk.
+
+```{r}
+# saveRDS(raymat,"data/raymat.RDS")
+# saveRDS(ambmat, "data/ambmat.RDS")
+# saveRDS(watermap,"data/watermap.RDS")
+```
+
+
+
+```{r}
+raymat = readRDS("data/raymat.RDS")
+ambmat = readRDS("data/ambmat.RDS")
+watermap = readRDS("data/watermap")
+```
+
+
+## Dry desert
+
+First, try plotting the rayshaded rendering in 2 dimensions. This is helpful if you need to fine tune things (e.g. water detection level)
+
+
+```{r}
+# assemble map components
+desert_shade = elev_matrix %>%
+  sphere_shade(texture = "desert", colorintensity = 3) %>%
+  add_water(watermap, color = "imhof1") %>%
+  add_shadow(raymat, max_darken = 0.6) %>%
+  add_shadow(ambmat, max_darken = 0.6)
+
+# plot 2D (change appearance here)
+ desert_shade %>%
+  save_png("plots/2d_render_lahaina_brown.png")
+
+
+```
+
+
+Next, using the same layers constructed above, create a 3D representation of the map area. 
+
+
+```{r}
+plot_3d(desert_shade,
+        elev_matrix,
+          zscale = zscale,
+          water = TRUE,
+          wateralpha = 0.1,
+          waterlinealpha = 0.1,
+          theta = 270, 
+          phi = 3,
+          zoom = 0.25,
+          fov = 0,
+          baseshape = "rectangle",
+          background = "gray94",
+          windowsize = c(2500,1500),
+          shadow = F)
+
+Sys.sleep(0.2)
+
+
+render_snapshot(clear=TRUE, "plots/3d_render_lahaina_brown.png")
+
+# # plot the 3d representation in R
+# render_snapshot("3d_render_lahaina.png")
+```
+
+## Green mountains
+
+```{r}
+rgl::clear3d()
+green_shade = elev_matrix %>%
+  sphere_shade(texture = "imhof1", colorintensity = 3) %>%
+   add_water(watermap, color = "imhof1") %>%
+   add_shadow(raymat, max_darken = 0.5) %>%
+   add_shadow(ambmat, max_darken = 0)
+```
+
+
+```{r}
+# plot 2D (change appearance here)
+green_shade %>%
+  save_png("plots/2d_render_lahaina_green.png")
+
+```
+
+
+```{r}
+# plot_3d(elev_green,
+#         elev_matrix,
+#           zscale = zscale,
+#           water = TRUE,
+#           wateralpha = 0.1,
+#           waterlinealpha = 0.1,
+#           theta = 270, 
+#           phi = 3,
+#           zoom = 0.25,
+#           fov = 0,
+#           baseshape = "rectangle",
+#           background = "gray94",
+#           windowsize = c(2500,1500),
+#            shadow = F)
+# 
+# Sys.sleep(0.2)
+
+# render_depth(focallength = 800, clear = TRUE, filename = "depth_test.png")
+
+#render_snapshot(clear=TRUE, "plots/3d_render_lahaina_green.png")
+
+```
+
+
+
+
+
+# Image overlays
+
+
+```{r}
+streams_overlay = png::readPNG("plots/gimp/2d_render_lahaina_streams_green.png")
+```
+
+## Full overlay
+
+```{r}
+rgl::clear3d()
+image_shade = elev_matrix %>%
+  sphere_shade(texture = "bw") %>%
+  add_overlay(overlay = streams_overlay) %>%
+  plot_3d(
+    elev_matrix,
+    zscale = zscale,
+    water = TRUE,
+    wateralpha = 0.1,
+    waterlinealpha = 0.1,
+    theta = 270,
+    phi = 3,
+    zoom = 0.25,
+    fov = 0,
+    baseshape = "rectangle",
+    background = "gray94",
+    windowsize = c(2500, 1500),
+    shadow = F
+  )
+
+Sys.sleep(0.2)
+
+render_snapshot(clear=TRUE, "plots/3d_render_lahaina_green_streams_overlay.png")
+
+
+```
+
+
+# Zoomed in version
+
+
+```{r}
+bbox2 <- list(
+  p1 = list(long = -156.72, # western boundary
+            lat = 20.845), # southern boundary
+  p2 = list(long = -156.64, # eastern boundary
+            lat = 20.915) # northern boundary
+)
+
+#N21 W156
+plot_bb(bbox2)
+
+```
+
+```{r}
+# crop data to fit bounding box
+zoom_crop = crop(elev_img, extent(bbox2$p1$long, bbox2$p2$long, bbox2$p1$lat, bbox2$p2$lat))
+
+# convert raster to matrix
+
+zoom_matrix = raster_to_matrix(zoom_crop)
+```
+
+
+```{r}
+height_shade(zoom_matrix) %>%
+  plot_map() 
+```
+
+```{r}
+
+
+# calculate rayshader layers, this step is resource intensive
+zoom_raymat   <- ray_shade(zoom_matrix,
+                      zscale = zscale,
+                      lambert = TRUE,
+                      multicore = T)
+
+zoom_ambmat   <- ambient_shade(zoom_matrix,
+                          zscale = zscale,
+                          multicore = T)
+```
+
+
+```{r}
+# note, 'detect water' might need fine tuning
+zoom_watermap <- detect_water(zoom_matrix,
+                         max_height = 0,
+                         cutoff = 0,
+                         zscale=zscale
+                         )
+
+
+```
+
+These can take a long time to generate, so maybe let's save them to disk.
+
+```{r}
+saveRDS(zoom_raymat,"data/zoom_raymat.RDS")
+saveRDS(zoom_ambmat, "data/zoom_ambmat.RDS")
+saveRDS(zoom_watermap,"data/zoom_watermap.RDS")
+```
+
+
+
+```{r}
+zoom_raymat = readRDS("data/zoom_raymat.RDS")
+zoom_ambmat = readRDS("data/zoom_ambmat.RDS")
+zoom_watermap = readRDS("data/zoom_watermap.RDS")
+```
+
+
+
+```{r}
+# plot 2D (change appearance here)
+# This should literally just be a cropped version of the full map
+
+zoom_shade = zoom_matrix %>%
+  sphere_shade(texture = "desert", colorintensity = 4) %>%
+   add_water(zoom_watermap, color = "imhof1" ) %>%
+     add_shadow(zoom_raymat, max_darken = 0.6) %>%
+     add_shadow(zoom_ambmat, max_darken = 0.6)
+
+
+save_png(zoom_shade,"plots/2d_render_lahaina_zoom.png")
+
+```
+
+
+```{r}
+rgl::clear3d()
+zoom_shade = zoom_matrix %>%
+  sphere_shade(texture = "desert", colorintensity = 4) %>%
+   add_water(zoom_watermap, color = "desert") %>%
+   add_shadow(zoom_raymat, max_darken = 0.5) %>%
+   add_shadow(zoom_ambmat, max_darken = 0)
+```
+
+
+```{r}
+plot_3d(
+  zoom_shade,
+  zoom_matrix,
+  zscale = zscale,
+  water = TRUE,
+  wateralpha = 0.1,
+  waterlinealpha = 0.1,
+  theta = 304,
+  phi = 25,
+  zoom = 0.4,
+  fov = 0,
+  baseshape = "circle",
+  background = "gray94",
+  windowsize = c(2200, 1400),
+  shadow = F
+)
+
+Sys.sleep(0.2)
+
+
+render_snapshot(clear=TRUE, "plots/3d_render_lahaina_zoom.png")
+
+# # plot the 3d representation in R
+# render_snapshot("3d_render_lahaina.png")
+```
+
+
+
+
+
+## Zoom overlay
+
+```{r}
+
+
+full_extent = extent(elev_img)
+png = streams_overlay
+crop_extent = extent(bbox2$p1$long, # x min
+                     bbox2$p2$long, # x max
+                     bbox2$p1$lat, # y min
+                     bbox2$p2$lat) # y max
+
+crop_png = function(png, full_extent, crop_extent){
+  
+  png_dims = dim(png)
+
+  full_x = seq(full_extent[1], full_extent[2], length.out = png_dims[1])
+  full_y = seq(full_extent[3], full_extent[4], length.out = png_dims[2])
+  
+  keep_x = full_x >= crop_extent[1] & full_x <= crop_extent[2]
+  keep_y = full_y >= crop_extent[3] & full_y <= crop_extent[4]
+  
+  crop_png = png[keep_x,keep_y,]
+  
+  return(crop_png)
+}
+
+```
+
+```{r}
+zoom_streams = crop_png(
+  streams_overlay,
+  full_extent = elev_img,
+  crop_extent = extent(bbox2$p1$long, # x min
+                       bbox2$p2$long, # x max
+                       bbox2$p1$lat,
+                       bbox2$p2$lat) # y min
+)
+```
+
+
+
+
+```{r}
+
+rgl::clear3d()
+image_shade = zoom_matrix %>%
+  sphere_shade(texture = "bw") %>%
+  add_overlay(overlay = zoom_streams) %>%
+  plot_3d(
+    zoom_matrix,
+    zscale = zscale,
+    theta = 304,
+    phi = 25,
+    zoom = 0.4,
+    fov = 0,
+    baseshape = "circle",
+    background = "gray94",
+    windowsize = c(2200, 1400),
+    shadow = F
+  )
+
+
+
+
+render_snapshot(clear=TRUE, "plots/3d_render_lahaina_zoom_streams_overlay.png")
+
+
+```
+
